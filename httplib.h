@@ -7,7 +7,6 @@
 
 #ifndef CPPHTTPLIB_HTTPLIB_H
 #define CPPHTTPLIB_HTTPLIB_H
-#define CPPHTTPLIB_ZLIB_SUPPORT
 /*
  * Configuration
  */
@@ -4961,9 +4960,6 @@ inline bool ClientImpl::write_request(Stream &strm, const Request &req,
         if (!req.has_header("Transfer-Encoding")) {
           headers.emplace("Transfer-Encoding", "chunked");
         }
-//        if (!req.has_header("Content-Length")) {
-//          headers.emplace("Content-Length", "0");
-//        }
         is_chunked_transfer = true;
       }
     } else {
@@ -5020,10 +5016,7 @@ inline bool ClientImpl::write_request(Stream &strm, const Request &req,
       size_t end_offset = req.content_length;
 
       bool ok = true;
-#ifdef CPPHTTPLIB_ZLIB_SUPPORT
-      bool compress_ = (req.has_header("Content-Encoding") &&
-                       (req.get_header_value("Content-Encoding") == "gzip"));
-#endif
+
       DataSink data_sink;
       data_sink.write = [&](const char *d, size_t l) {
         if (is_chunked_transfer) {
@@ -5080,6 +5073,8 @@ inline bool ClientImpl::write_request(Stream &strm, const Request &req,
         }
       } else {
 #ifdef CPPHTTPLIB_ZLIB_SUPPORT
+        bool compress_ = (req.has_header("Content-Encoding") &&
+                         (req.get_header_value("Content-Encoding") == "gzip"));
         if (compress_) {
           detail::gzip_compressor compressor;
           DataSink data_sink2;

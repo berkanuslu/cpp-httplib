@@ -4961,9 +4961,6 @@ inline bool ClientImpl::write_request(Stream &strm, const Request &req,
         if (!req.has_header("Transfer-Encoding")) {
           headers.emplace("Transfer-Encoding", "chunked");
         }
-        if (!req.has_header("Content-Length")) {
-          headers.emplace("Content-Length", "0");
-        }
         is_chunked_transfer = true;
       }
     } else {
@@ -5076,13 +5073,46 @@ inline bool ClientImpl::write_request(Stream &strm, const Request &req,
           }
         }
       } else {
-        if (!req.content_provider(offset, -1, data_sink)) {
-          error_ = Error::Canceled;
-          return false;
-        }
-        else
+#ifdef CPPHTTPLIB_ZLIB_SUPPORT
+        bool compress_ = (req.has_header("Content-Encoding") &&
+                         (req.get_header_value("Content-Encoding") == "gzip"));
+        if (compress_) {
+          detail::gzip_compressor compressor;
+          DataSink data_sink2;
+          bool ok2 = true;
+          auto send_func = [&](const char *data2, size_t data_len2) {
+            if(data_len2 > 0) data_sink.write(data2, data_len2);
+            return true;
+          };
+          data_sink2.write = [&](const char *data, size_t data_len) {
+            ok2 = ok2 && compressor.compress(data, data_len, false, send_func);
+            return ok2;
+          };
+          data_sink2.is_writable = [&](void) { return ok2; };
+          data_sink2.done = [&]() {
+            compressor.compress(NULL, 0, true, send_func);
+            data_sink.done();
+          };
+
+          if (!req.content_provider(offset, -1, data_sink2)) {
+            error_ = Error::Canceled;
+            return false;
+          }
+          else
+          {
+            data_sink2.done();
+          }
+        } else
+#endif
         {
-          data_sink.done();
+          if (!req.content_provider(offset, -1, data_sink)) {
+            error_ = Error::Canceled;
+            return false;
+          }
+          else
+          {
+            data_sink.done();
+          }
         }
         if (!ok) {
           error_ = Error::Write;
@@ -5112,48 +5142,51 @@ inline std::unique_ptr<Response> ClientImpl::send_with_content_provider(
 
 #ifdef CPPHTTPLIB_ZLIB_SUPPORT
   if (compress_) {
-    detail::gzip_compressor compressor;
+    if (content_length == 0) {
+      req.content_provider = std::move(content_provider);
+    } else {
+      detail::gzip_compressor compressor;
 
-    if (content_provider) {
-      auto ok = true;
-      size_t offset = 0;
+      if (content_provider) {
+        auto ok = true;
+        size_t offset = 0;
 
-      DataSink data_sink;
-      data_sink.write = [&](const char *data, size_t data_len) {
-        if (ok) {
-          auto last = offset + data_len == content_length;
+        DataSink data_sink;
+        data_sink.write = [&](const char *data, size_t data_len) {
+          if (ok) {
+            auto last = offset + data_len == content_length;
 
-          auto ret = compressor.compress(
-              data, data_len, last, [&](const char *data, size_t data_len) {
-                req.body.append(data, data_len);
-                return true;
-              });
+            auto ret = compressor.compress(
+                data, data_len, last, [&](const char *data, size_t data_len) {
+                  req.body.append(data, data_len);
+                  return true;
+                });
 
-          if (ret) {
-            offset += data_len;
-          } else {
-            ok = false;
+            if (ret) {
+              offset += data_len;
+            } else {
+              ok = false;
+            }
+          }
+        };
+        data_sink.is_writable = [&](void) { return ok && true; };
+
+        while (ok && offset < content_length) {
+          if (!content_provider(offset, content_length - offset, data_sink)) {
+            error_ = Error::Canceled;
+            return nullptr;
           }
         }
-      };
-      data_sink.is_writable = [&](void) { return ok && true; };
-
-      while (ok && offset < content_length) {
-        if (!content_provider(offset, content_length - offset, data_sink)) {
-          error_ = Error::Canceled;
+      } else {
+        if (!compressor.compress(body.data(), body.size(), true,
+                                [&](const char *data, size_t data_len) {
+                                  req.body.append(data, data_len);
+                                  return true;
+                                })) {
           return nullptr;
         }
       }
-    } else {
-      if (!compressor.compress(body.data(), body.size(), true,
-                               [&](const char *data, size_t data_len) {
-                                 req.body.append(data, data_len);
-                                 return true;
-                               })) {
-        return nullptr;
-      }
     }
-
     req.headers.emplace("Content-Encoding", "gzip");
   } else
 #endif
